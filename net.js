@@ -241,24 +241,57 @@ function p2pTransport(emit) {
     }
   }
 
-  async function hostCreate() {
-    await loadPeerJS();
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    // 4 位码有撞号的可能（公共信令是全服共享的），撞了就换一个
-    for (let attempt = 0; attempt < 8; attempt++) {
+  // 客人也走显式 id。PeerJS 在"随机 id"模式下会先请求
+  // 0.peerjs.com/peerjs/id 拿一个编号，多一次 HTTP 往返；那一步一旦慢，
+  // 就会撞上连接超时。房主因为带了 id 不受影响，症状就是
+  // "房主建得出房间、客人死活进不去"。
+  function guestId() {
+    return 'g' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+  }
+
+  function explain(e) {
+    if (!e) return '未知错误';
+    if (e.type === 'browser-incompatible') return '这个浏览器不支持 WebRTC';
+    if (e.type === 'network' || e.type === 'server-error') return '信令服务器连不上';
+    if (e.type === 'socket-error' || e.type === 'socket-closed') return '信令连接被断开';
+    if (!e.type) return '信令服务器没有响应';
+    return e.type;
+  }
+
+  async function hostCreate() {
+    try {
+      await loadPeerJS();
+    } catch {
+      emit('err', { msg: 'PeerJS 加载失败，检查网络后刷新页面' });
+      return;
+    }
+
+    let lastErr = null;
+
+    // 4 位码有撞号的可能（公共信令是全服共享的），撞了就换一个；
+    // 网络类的错误也重试几次，公共信令偶尔会抽风。
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (attempt === 0) {
+        emit('status', { text: '正在连接信令服务器…' });
+      } else {
+        emit('status', { text: `信令服务器没响应，正在重试（${attempt + 1}/6）…` });
+        await sleep(1200 * attempt);
+      }
+
       const c = makeCode();
       const p = new window.Peer(PREFIX + c, { debug: 0, config: ICE });
 
       try {
-        await waitOpen(p);
+        await waitOpen(p, 15000);
       } catch (e) {
+        lastErr = e;
         try { p.destroy(); } catch {}
-        if (e && e.type === 'unavailable-id') continue;
-        if (e && e.type === 'invalid-id') continue;
-        emit('err', { msg: '创建房间失败：' + (e && e.type ? e.type : '信令服务不可用') });
-        return;
+        continue;                       // 撞号或网络抖动，换一个再来
       }
 
+      emit('status', { text: '' });
       peer = p;
       code = c;
       side = 1;
@@ -293,22 +326,50 @@ function p2pTransport(emit) {
       return;
     }
 
-    emit('err', { msg: '房间号连续冲突，请重试' });
+    emit('status', { text: '' });
+    emit('err', { msg: '创建房间失败：' + explain(lastErr) + '，稍后重试即可' });
   }
 
   /* ---- 客人端 ---- */
 
   async function guestJoin(want) {
-    await loadPeerJS();
-
     try {
-      peer = new window.Peer({ debug: 0, config: ICE });
-      await waitOpen(peer);
-    } catch (e) {
-      emit('err', { msg: '连不上信令服务：' + (e && e.type ? e.type : '网络不通') });
+      await loadPeerJS();
+    } catch {
+      emit('err', { msg: 'PeerJS 加载失败，检查网络后刷新页面' });
       return;
     }
 
+    let lastErr = null;
+    let p = null;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt === 0) {
+        emit('status', { text: '正在连接信令服务器…' });
+      } else {
+        emit('status', { text: `信令服务器没响应，正在重试（${attempt + 1}/3）…` });
+        await sleep(1200 * attempt);
+      }
+
+      p = new window.Peer(guestId(), { debug: 0, config: ICE });
+      try {
+        await waitOpen(p, 15000);
+        break;
+      } catch (e) {
+        lastErr = e;
+        try { p.destroy(); } catch {}
+        p = null;
+      }
+    }
+
+    if (!p) {
+      emit('status', { text: '' });
+      emit('err', { msg: '连不上信令服务器：' + explain(lastErr) + '，稍后重试（也可以先玩单机）' });
+      return;
+    }
+
+    emit('status', { text: '正在连接房主…' });
+    peer = p;
     side = 2;
     code = want;
 
@@ -324,11 +385,15 @@ function p2pTransport(emit) {
     conn = peer.connect(PREFIX + want, { reliable: true });
 
     const to = setTimeout(() => {
-      if (!dead && !(conn && conn.open)) emit('err', { msg: '连接超时，可能被网络限制了' });
+      if (!dead && !(conn && conn.open)) {
+        emit('status', { text: '' });
+        emit('err', { msg: '连接超时，可能被网络限制了' });
+      }
     }, 20000);
 
     conn.on('open', () => {
       clearTimeout(to);
+      emit('status', { text: '' });
       startHeartbeat();
       emit('room', { code: want, side: 2 });
     });
@@ -356,8 +421,15 @@ function p2pTransport(emit) {
   function send(obj) {
     if (!obj) return;
 
-    if (obj.t === 'create') { hostCreate(); return; }
-    if (obj.t === 'join') { guestJoin(String(obj.code || '').toUpperCase()); return; }
+    if (obj.t === 'create') {
+      hostCreate().catch(e => emit('err', { msg: '创建房间出错：' + (e && e.message || e) }));
+      return;
+    }
+    if (obj.t === 'join') {
+      guestJoin(String(obj.code || '').toUpperCase())
+        .catch(e => emit('err', { msg: '进入房间出错：' + (e && e.message || e) }));
+      return;
+    }
 
     // 房主按"再来一局"：不需要发给谁，自己开局，start 会自动广播
     if (side === 1 && obj.t === 'again') {

@@ -735,6 +735,12 @@ function ensureNet() {
     showMenu();
   });
 
+  // 连接信令服务器的进度提示（重试时会更新文案），别让界面干等着
+  net.on('status', m => {
+    if (m && m.text) lobbyMsg(m.text, true);
+    else lobbyMsg('');
+  });
+
   net.on('start', m => {
     mode = 'online';
     rebuildActors();
