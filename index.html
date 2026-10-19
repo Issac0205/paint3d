@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>涂地大作战</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #12161f;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none; }
+  /* 移动端地址栏收起/展开时 100% 会比可见区域高，导致页面被轻微滚动、HUD 顶部被切 */
+  @supports (height: 100dvh) {
+    html, body { height: 100dvh; }
+  }
+  #app { position: relative; width: 100%; height: 100%; }
+  canvas { display: block; }
+
+  /* ---------- HUD ---------- */
+  #hud { position: absolute; top: 0; left: 0; right: 0;
+    padding: 14px 18px;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    display: flex; align-items: flex-start; gap: 14px; pointer-events: none; }
+
+  .side { flex: 1 1 0; min-width: 0; overflow: hidden; }
+  .side.right { text-align: right; }
+  .label { font-size: 12px; letter-spacing: .04em; margin-bottom: 5px;
+    display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .side.right .label { justify-content: flex-end; }
+  /* 名字可以被省略号截断，百分比绝不收缩 —— 空间不够时优先保住数字 */
+  .name { font-size: 13px; font-weight: 500; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pct { font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums;
+    line-height: 1; flex: 0 0 auto; }
+  .track { height: 7px; border-radius: 4px; background: rgba(255,255,255,.1);
+    overflow: hidden; }
+  .fill { height: 100%; border-radius: 4px; transition: width .15s linear; }
+  .p1 .name, .p1 .pct { color: #2dd4bf; }
+  .p2 .name, .p2 .pct { color: #fb7185; }
+  .p1 .fill { background: #2dd4bf; }
+  .p2 .fill { background: #fb7185; }
+
+  #timer { flex: 0 0 auto; text-align: center; padding: 2px 16px; }
+  #timer .t { font-size: 30px; font-weight: 500; color: #e8edf5;
+    font-variant-numeric: tabular-nums; line-height: 1.1; }
+  #timer .s { font-size: 11px; color: #7b8698; letter-spacing: .08em; }
+
+  /* ---------- 底部提示 ---------- */
+  #hint { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font-size: 12px; color: #6b7688; white-space: nowrap; pointer-events: none; }
+
+  /* ---------- 画面氛围 ---------- */
+  /* 暗角：把视线收拢到画面中心，同时压住边缘杂色 */
+  #vignette { position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 100% at 50% 45%,
+      rgba(0,0,0,0) 46%, rgba(6,10,16,.22) 80%, rgba(4,7,11,.45) 100%); }
+  /* 围地成功时的整屏微闪 */
+  #flash { position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(80% 60% at 50% 55%, rgba(255,255,255,.20), rgba(255,255,255,0) 70%); }
+  #flash.on { animation: flash .45s ease-out; }
+  @keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+
+  /* ---------- 提示气泡 ---------- */
+  #toast { position: absolute; left: 50%; top: 92px; transform: translate(-50%, -8px);
+    padding: 9px 18px; border-radius: 999px; font-size: 13px; letter-spacing: .02em;
+    color: #06231f; background: #2dd4bf; font-weight: 500; pointer-events: none;
+    opacity: 0; transition: opacity .18s ease, transform .18s ease;
+    box-shadow: 0 8px 24px rgba(45,212,191,.28); white-space: nowrap; }
+  #toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- 摇杆 ---------- */
+  #stick { position: absolute; width: 118px; height: 118px; border-radius: 50%;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+    display: none; touch-action: none; }
+  #stick.on { display: block; }
+  #knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px;
+    margin: -26px 0 0 -26px; border-radius: 50%;
+    background: rgba(45,212,191,.55); border: 1px solid rgba(255,255,255,.35); }
+
+  /* ---------- 结算 ---------- */
+  #over { position: absolute; inset: 0; display: none; align-items: center;
+    justify-content: center; background: rgba(10,13,19,.82); backdrop-filter: blur(6px);
+    z-index: 12; }
+  #over.on { display: flex; }
+  .panel { text-align: center; padding: 36px 44px; border-radius: 18px;
+    background: #1a2030; border: 1px solid rgba(255,255,255,.1); }
+  .panel h1 { font-size: 26px; font-weight: 500; margin-bottom: 8px; color: #e8edf5; }
+  .panel .score { font-size: 14px; color: #8b97a8; margin-bottom: 22px;
+    font-variant-numeric: tabular-nums; }
+  .panel .score b { font-weight: 500; }
+  .panel button { font: inherit; font-size: 14px; padding: 11px 30px;
+    border-radius: 10px; border: 0; cursor: pointer; color: #06231f;
+    background: #2dd4bf; font-weight: 500; }
+  .panel button:active { transform: scale(.97); }
+  .panel .note { margin-top: 14px; font-size: 12px; color: #6f7b8d; }
+
+  /* ---------- 大厅 ---------- */
+  #lobby { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; background: rgba(8,11,17,.72);
+    backdrop-filter: blur(10px); z-index: 20; padding: 20px; }
+  #lobby.hide { display: none; }
+
+  .card { width: min(100%, 390px); padding: 34px 30px 26px; border-radius: 20px;
+    background: linear-gradient(180deg, #1c2433, #151b26);
+    border: 1px solid rgba(255,255,255,.09);
+    box-shadow: 0 30px 80px rgba(0,0,0,.6); text-align: center; }
+  .card h1 { font-size: 24px; font-weight: 500; color: #e8edf5; letter-spacing: .02em; }
+  .card .sub { margin-top: 7px; font-size: 12px; color: #6f7b8d; letter-spacing: .06em; }
+
+  .btn { font: inherit; font-size: 14px; padding: 12px 18px; border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05);
+    color: #dfe6f0; cursor: pointer; transition: background .15s, transform .1s;
+    white-space: nowrap; }
+  .btn:hover { background: rgba(255,255,255,.1); }
+  .btn:active { transform: scale(.98); }
+  .btn.primary { background: #2dd4bf; border-color: transparent; color: #06231f; font-weight: 500; }
+  .btn.primary:hover { background: #3ae3ce; }
+  .btn[disabled] { opacity: .45; cursor: default; }
+
+  #lobbyMenu { margin-top: 26px; display: flex; flex-direction: column; gap: 10px; }
+  .join { display: flex; gap: 8px; }
+  .join input { flex: 1 1 auto; width: 0; font: inherit; font-size: 17px;
+    letter-spacing: .3em; text-align: center; text-transform: uppercase;
+    padding: 11px 10px 11px 16px; border-radius: 12px; color: #e8edf5;
+    background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.12); outline: none; }
+  .join input::placeholder { letter-spacing: .04em; color: #5d6879; text-transform: none; }
+  .join input:focus { border-color: #2dd4bf; }
+
+  #codeBox { display: none; margin-top: 24px; }
+  #codeBox.on { display: block; }
+  .code { font-size: 42px; letter-spacing: .3em; color: #2dd4bf; font-weight: 500;
+    font-variant-numeric: tabular-nums; margin-left: .3em; }
+  .waiting { margin-top: 12px; font-size: 13px; color: #8b97a8; }
+  .waiting i { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #2dd4bf; margin-right: 7px; vertical-align: middle;
+    animation: blink 1.2s ease-in-out infinite; }
+  @keyframes blink { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+
+  #lobbyMsg { margin-top: 14px; font-size: 12.5px; color: #fb7185; min-height: 16px; }
+  #lobbyMsg.ok { color: #2dd4bf; }
+
+  /* ---------- 开局倒数 ---------- */
+  #countdown { position: absolute; inset: 0; display: none; align-items: center;
+    justify-content: center; pointer-events: none; z-index: 15; }
+  #countdown.on { display: flex; }
+  #countdown span { font-size: 110px; font-weight: 600; color: #f2f6fb;
+    text-shadow: 0 12px 48px rgba(0,0,0,.65); }
+  #countdown span.pop { animation: pop .7s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes pop { from { transform: scale(1.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  /* ---------- 窄屏 ---------- */
+  @media (max-width: 520px) {
+    #hud { padding: 10px 12px; gap: 10px;
+      padding-top: calc(10px + env(safe-area-inset-top, 0px)); }
+    .pct { font-size: 19px; }
+    .name { font-size: 12px; }
+    #timer { padding: 2px 8px; }
+    #timer .t { font-size: 24px; }
+    #timer .s { display: none; }
+    #hint { font-size: 11px; bottom: 12px; white-space: normal;
+      width: 88%; text-align: center; line-height: 1.55; }
+    .panel { padding: 28px 30px; }
+    .panel h1 { font-size: 22px; }
+    .card { padding: 28px 22px 22px; }
+    .card h1 { font-size: 21px; }
+    .code { font-size: 36px; }
+    #countdown span { font-size: 84px; }
+  }
+
+  @media (max-width: 380px) {
+    #hud { padding: 8px 10px; gap: 6px;
+      padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+    .label { gap: 4px; margin-bottom: 4px; }
+    .pct { font-size: 17px; }
+    .name { font-size: 11px; }
+    #timer { padding: 2px 4px; }
+    #timer .t { font-size: 21px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="vignette"></div>
+  <div id="flash"></div>
+
+  <div id="hud">
+    <div class="side p1">
+      <div class="label"><span class="name" id="p1name">你</span><span class="pct" id="p1pct">0.0%</span></div>
+      <div class="track"><div class="fill" id="p1bar" style="width:0%"></div></div>
+    </div>
+    <div id="timer">
+      <div class="t" id="clock">1:30</div>
+      <div class="s">剩余</div>
+    </div>
+    <div class="side right p2">
+      <div class="label"><span class="pct" id="p2pct">0.0%</span><span class="name" id="p2name">练习对手</span></div>
+      <div class="track"><div class="fill" id="p2bar" style="width:0%"></div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+  <div id="hint">WASD / 方向键移动 · 涂出一圈封闭区域可占满内部 · 过河只能走桥</div>
+  <div id="stick"><div id="knob"></div></div>
+
+  <div id="countdown"><span id="cdText"></span></div>
+
+  <div id="over">
+    <div class="panel">
+      <h1 id="result">时间到</h1>
+      <div class="score" id="finalScore"></div>
+      <button id="again">再来一局</button>
+      <div class="note" id="overNote"></div>
+    </div>
+  </div>
+
+  <div id="lobby">
+    <div class="card">
+      <h1>涂地大作战</h1>
+      <div class="sub">江南大学 · 蠡湖校区</div>
+
+      <div id="lobbyMenu">
+        <button class="btn primary" id="btnSolo">单机练习</button>
+        <button class="btn" id="btnCreate">创建房间</button>
+        <div class="join">
+          <input id="codeInput" maxlength="4" placeholder="输入 4 位房间号" autocomplete="off" spellcheck="false" autocapitalize="characters" enterkeyhint="go">
+          <button class="btn" id="btnJoin">进入</button>
+        </div>
+      </div>
+
+      <div id="codeBox">
+        <div class="code" id="codeVal">----</div>
+        <div class="waiting"><i></i><span id="waitText">等待对手输入房间号…</span></div>
+        <button class="btn" id="btnCancel" style="margin-top:18px">取消</button>
+      </div>
+
+      <div id="lobbyMsg"></div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./lib/three.module.js" } }
+</script>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
