@@ -11,15 +11,20 @@
 
 ## 直接玩
 
-联机有两种跑法，代码会自动选：
+联机有三种跑法，代码会自己挑，不用改逻辑：
 
 | 部署方式 | 联机怎么走 |
 | --- | --- |
-| GitHub Pages / 任意静态托管 | WebRTC 点对点直连，房主的浏览器自己当服务器 |
-| 本地 `node server.js` | WebSocket，走局域网服务器 |
+| 本地 `node server.js` | 同源 WebSocket（优先，本地开发用它） |
+| 配了外部服务器（Worker / 云主机） | 连那个 WebSocket，服务端转发 |
+| 都没配的静态托管（GitHub Pages） | WebRTC 点对点，房主的浏览器当服务器 |
 
-页面加载后会请求一次 `./health`：自己的服务器会返回 `{"ws":true}`，静态托管会 404，
-于是自动切到 P2P。对 `game.js` 来说两种传输的接口完全一样。
+判断顺序写在 `net.js` 的 `pickTransport()` 里：先探同源 `./health`，
+有就用自己的；没有再读 `config.js` 里的 `window.PAINT3D_WS`；都没有才退回 P2P。
+
+**想要稳定的联机，建议部署 `worker/` 里的 Cloudflare Worker**，见
+[worker/README.md](worker/README.md)。P2P 只适合"随手拉个人试一局"，
+它依赖公共信令、没有 TURN 中继、而且房主切后台整局就会冻住。
 
 ## 本地运行
 
@@ -56,9 +61,11 @@ Windows 上直接双击 `启动游戏.bat` 也行。没装 Node 时脚本会退�
 | 文件 | 作用 |
 | --- | --- |
 | `index.html` | 页面骨架、HUD、大厅、样式 |
+| `config.js` | 部署配置：外部服务器地址（留空则自动探测） |
 | `game.js` | 主循环、角色、输入、渲染、联机客户端 |
 | `net.js` | 网络层：`ws` 和 `p2p` 两种传输，接口一致 |
-| `server.js` | 零依赖的静态服务 + WebSocket 房间服务（局域网用） |
+| `server.js` | 零依赖的静态服务 + WebSocket 房间服务（局域网 / 自建服务器用） |
+| `worker/` | Cloudflare Worker + Durable Object 版房间服务（公网稳定联机） |
 | `world.js` | 场景搭建：地面、水面、桥、建筑、树、路灯、遮挡淡出 |
 | `map.js` | 地图数据：地形、障碍、步道、树和路灯的生成规则 |
 | `territory.js` | 涂色格子的归属统计、封闭区域填充 |

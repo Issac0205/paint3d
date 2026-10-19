@@ -42,17 +42,49 @@ function makeCode() {
 
 /* ---------------- 探测：这台机器上有没有自己的服务器 ---------------- */
 
-async function pickTransport() {
+// 服务器地址：地址栏 ?ws= 优先，其次 config.js 里的 window.PAINT3D_WS，
+// 都没有就当作同源（node server.js 的情况）。
+function wsEndpoint() {
+  let raw = '';
+  try { raw = new URLSearchParams(location.search).get('ws') || ''; } catch {}
+  if (!raw) raw = window.PAINT3D_WS || '';
+  if (!raw) return '';
+
+  // 允许直接填 https://xxx 或 http://xxx，自动换成 wss/ws
+  return String(raw)
+    .replace(/^https:/i, 'wss:')
+    .replace(/^http:/i, 'ws:');
+}
+
+function sameOriginWs() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws`;
+}
+
+async function sameOriginHasServer() {
   try {
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), 1500);
+    const t = setTimeout(() => ctl.abort(), 800);
     const r = await fetch('./health', { cache: 'no-store', signal: ctl.signal });
     clearTimeout(t);
-    if (r.ok) {
-      const j = await r.json();
-      if (j && j.ws) return 'ws';
-    }
-  } catch { /* 静态托管会 404 或者超时，走 p2p */ }
+    if (!r.ok) return false;
+    const j = await r.json();
+    return !!(j && j.ws);
+  } catch {
+    return false;                 // 静态托管会 404 或者超时
+  }
+}
+
+let useSameOrigin = false;
+
+async function pickTransport() {
+  // 顺序很重要：
+  // 1. 同源有服务器（本地 node server.js）→ 永远优先，别被远程配置抢走
+  // 2. 配了外部服务器（Cloudflare Worker / 云服务器）→ 用它
+  // 3. 都没有 → 退回浏览器 P2P
+  useSameOrigin = await sameOriginHasServer();
+  if (useSameOrigin) return 'ws';
+  if (wsEndpoint()) return 'ws';
   return 'p2p';
 }
 
@@ -67,7 +99,7 @@ function wsTransport(emit) {
       let settled = false;
 
       try {
-        ws = new WebSocket(`${proto}//${location.host}/ws`);
+        ws = new WebSocket(useSameOrigin ? sameOriginWs() : (wsEndpoint() || sameOriginWs()));
       } catch {
         reject(new Error('浏览器不支持 WebSocket'));
         return;

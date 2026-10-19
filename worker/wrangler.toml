@@ -1,0 +1,17 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "paint3d-ws"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# 免费套餐也能用 Durable Objects（要求用 SQLite 后端，见下面的 migrations）
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "RoomHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomHub"]
+
+# 只在本地 wrangler dev 时生效，部署时不带这个配置
+[observability]
+enabled = true
